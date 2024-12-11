@@ -1,7 +1,7 @@
 #include <ros/ros.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/PointCloud2.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 
 using namespace std;
 
@@ -10,7 +10,7 @@ using namespace std;
 typedef pcl::PointXYZINormal PointType;
 typedef pcl::PointCloud<PointType> PointCloudXYZI;
 
-enum LID_TYPE{AVIA = 1, VELO16, OUST64, RS128}; //{1, 2, 3, 4}
+enum LID_TYPE{AVIA = 1, VELO16, OUST64, RS128,airsim}; //{1, 2, 3, 4}
 enum Feature{Nor, Poss_Plane, Real_Plane, Edge_Jump, Edge_Plane, Wire, ZeroPoint};//未判断，可能平面，平面，跳跃边，平面交接边,细线
 enum Surround{Prev, Next};
 enum E_jump{Nr_nor, Nr_zero, Nr_180, Nr_inf, Nr_blind}; // 未判断，接近0度，接近180度，接近远端，接近近端
@@ -128,7 +128,7 @@ class Preprocess
   Preprocess();
   ~Preprocess();
   
-  void process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
+  void process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
   void process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
   void set(bool feat_en, int lid_type, double bld, int pfilt_num);
 
@@ -143,10 +143,11 @@ class Preprocess
     
 
   private:
-  void avia_handler(const livox_ros_driver::CustomMsg::ConstPtr &msg);
+  void avia_handler(const livox_ros_driver2::CustomMsg::ConstPtr &msg);
   void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
   void velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
   void rs_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
+  void PointCloud2_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);// 用于对velodyne激光雷达数据进行处理
   void give_feature(PointCloudXYZI &pl, vector<orgtype> &types); // 当前扫描线点云， 扫描点属性
   void pub_func(PointCloudXYZI &pl, const ros::Time &ct);
   int  plane_judge(const PointCloudXYZI &pl, vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);

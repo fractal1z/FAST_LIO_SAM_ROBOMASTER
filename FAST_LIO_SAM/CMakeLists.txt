@@ -14,6 +14,9 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -pthread -std=c++0x -std=c++14 -fexceptions")
+set(livox_ros_driver2_DIR "~/livox_ros_driver2/devel/share/livox_ros_driver2/cmake")
+# set(GeographicLib_DIR "/usr/share/cmake/geographiclib")
+
 
 message("Current CPU archtecture: ${CMAKE_SYSTEM_PROCESSOR}")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)" )
@@ -51,7 +54,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   pcl_ros
   tf
-  livox_ros_driver
+  livox_ros_driver2
   message_generation
   eigen_conversions
 )

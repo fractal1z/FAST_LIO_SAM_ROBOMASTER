@@ -56,7 +56,7 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
 
@@ -283,6 +283,7 @@ bool visulize_IkdtreeMap = false;            //  visual iktree submap
 double last_timestamp_gnss = -1.0 ;
 deque<nav_msgs::Odometry> gnss_buffer;
 geometry_msgs::PoseStamped msg_gnss_pose;
+geometry_msgs::PoseStamped initial_pose;
 string gnss_topic ;
 bool useImuHeadingInitialization;   
 bool useGpsElevation;             //  是否使用gps高层优化
@@ -292,6 +293,8 @@ float poseCovThreshold;       //  位姿协方差阈值  from isam2
 M3D Gnss_R_wrt_Lidar(Eye3d) ;         // gnss  与 imu 的外参
 V3D Gnss_T_wrt_Lidar(Zero3d);
 bool gnss_inited = false ;                        //  是否完成gnss初始化
+bool initial_pose_inited = false ;                        //  是否完成初始位姿初始化
+bool initial_pose_change_x = false ;                        //  是否完成初始位姿初始化
 shared_ptr<GnssProcess> p_gnss(new GnssProcess());
 GnssProcess gnss_data;
 ros::Publisher pubGnssPath ;
@@ -614,7 +617,7 @@ void addOdomFactor()
     else
     {
         // 添加激光里程计因子
-        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());  //1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4
         gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back()); /// pre
         gtsam::Pose3 poseTo = trans2gtsamPose(transformTobeMapped);                   // cur
         // 参数：前一帧id，当前帧id，前一帧与当前帧的位姿变换（作为观测值），噪声协方差
@@ -709,7 +712,7 @@ void addGPSFactor()
             curGPSPoint.x = gps_x;
             curGPSPoint.y = gps_y;
             curGPSPoint.z = gps_z;
-            if (pointDistance(curGPSPoint, lastGPSPoint) < 5.0)
+            if (pointDistance(curGPSPoint, lastGPSPoint) < 2)
                 continue;
             else
                 lastGPSPoint = curGPSPoint;
@@ -1262,30 +1265,48 @@ void lasermap_fov_segment()
     kdtree_delete_time = omp_get_wtime() - delete_begin;
 }
 
+
+double timediff_lidar_wrt_imu = 0.0;
+bool timediff_set_flg = false; // 标记是否已经进行了时间补偿
+
 void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 {
     mtx_buffer.lock();
     scan_count++;
     double preprocess_start_time = omp_get_wtime();
+    time_buffer.push_back(msg->header.stamp.toSec());               //将时间放入缓冲区
+    last_timestamp_lidar = msg->header.stamp.toSec();               //记录最后一个时间
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
         ROS_ERROR("lidar loop back, clear buffer");
         lidar_buffer.clear();
     }
 
+
+    if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
+    {  // 如果不需要进行时间同步，而imu时间戳和雷达时间戳相差大于10s，则输出错误信息
+        printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n",last_timestamp_imu, last_timestamp_lidar);
+    }
+    if (time_sync_en && !timediff_set_flg && abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
+    { // time_sync_en为true时，当imu时间戳和雷达时间戳相差大于1s时，进行时间同步
+        timediff_set_flg = true;// 标记已经进行时间同步
+        timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu;
+        printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
+    }
+
+
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
     time_buffer.push_back(msg->header.stamp.toSec());
-    last_timestamp_lidar = msg->header.stamp.toSec();
+  
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
 
-double timediff_lidar_wrt_imu = 0.0;
-bool timediff_set_flg = false; // 标记是否已经进行了时间补偿
-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
+
+void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg)
 {
     mtx_buffer.lock();
     double preprocess_start_time = omp_get_wtime();
@@ -1434,6 +1455,109 @@ void gnss_cbk(const sensor_msgs::NavSatFixConstPtr& msg_in)
         gnss_cloudKeyPoses6D->push_back(thisPose6D);   
     }
 
+
+}
+
+
+void gnss_airsim_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
+{
+    //  ROS_INFO("GNSS DATA IN ");
+    double timestamp = msg_in->header.stamp.toSec();
+
+    mtx_buffer.lock();
+
+    // 没有进行时间纠正
+    if (timestamp < last_timestamp_gnss)
+    {
+        ROS_WARN("gnss loop back, clear buffer");
+        gnss_buffer.clear();
+    }
+
+    last_timestamp_gnss = timestamp;
+
+    // convert ROS NavSatFix to GeographicLib compatible GNSS message:
+    // gnss_data.time = msg_in->header.stamp.toSec();
+    // gnss_data.status = msg_in->status.status;
+    // gnss_data.service = msg_in->status.service;
+    // gnss_data.pose_cov[0] = msg_in->position_covariance[0];
+    // gnss_data.pose_cov[1] = msg_in->position_covariance[4];
+    // gnss_data.pose_cov[2] = msg_in->position_covariance[8];
+
+    mtx_buffer.unlock();
+    if(!initial_pose_inited){  }
+    else if (!gnss_inited){           //  初始化位置
+        //gnss_data.InitOriginPosition(msg_in->latitude, msg_in->longitude, msg_in->altitude) ; 
+        gnss_inited = true ;
+    }else{                               //   初始化完成
+        //gnss_data.UpdateXYZ(msg_in->latitude, msg_in->longitude, msg_in->altitude) ;             //  WGS84 -> ENU  ???  调试结果好像是 NED 北东地
+
+        Eigen::Matrix4d gnss_pose = Eigen::Matrix4d::Identity();
+        // gnss_pose(0,3) = msg_in->pose.position.x -initial_pose.pose.position.x ;                 //    北
+        // gnss_pose(1,3) = msg_in->pose.position.y -initial_pose.pose.position.y;                 //     东
+        // gnss_pose(2,3) = msg_in->pose.position.z -initial_pose.pose.position.z;                 //    地
+
+        gnss_pose(0,3) = msg_in->pose.position.x ;                 //    北
+        gnss_pose(1,3) = msg_in->pose.position.y ;                 //     东
+        gnss_pose(2,3) = msg_in->pose.position.z ;                 //    地
+
+        Eigen::Isometry3d gnss_to_lidar(Gnss_R_wrt_Lidar) ;
+        gnss_to_lidar.pretranslate(Gnss_T_wrt_Lidar);
+        gnss_pose  =  gnss_to_lidar  *  gnss_pose ;                    //  gnss 转到 lidar 系下, （当前Gnss_T_wrt_Lidar，只是一个大致的初值）
+
+        nav_msgs::Odometry gnss_data_enu ;
+        // add new message to buffer:
+        gnss_data_enu.header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec());
+        gnss_data_enu.pose.pose.position.x =  gnss_pose(0,3) ;  //gnss_data.local_E ;   北
+        gnss_data_enu.pose.pose.position.y =  gnss_pose(1,3) ;  //gnss_data.local_N;    东
+        gnss_data_enu.pose.pose.position.z =  gnss_pose(2,3) ;  //  地
+
+        gnss_data_enu.pose.pose.orientation.x =  geoQuat.x ;                //  gnss 的姿态不可观，所以姿态只用于可视化，取自imu
+        gnss_data_enu.pose.pose.orientation.y =  geoQuat.y;
+        gnss_data_enu.pose.pose.orientation.z =  geoQuat.z;
+        gnss_data_enu.pose.pose.orientation.w =  geoQuat.w;
+
+        gnss_data_enu.pose.covariance[0] = 0.00033 ;
+        gnss_data_enu.pose.covariance[7] = 0.00033 ;
+        gnss_data_enu.pose.covariance[14] = 0.00033 ;
+
+        gnss_buffer.push_back(gnss_data_enu);
+
+        // visial gnss path in rviz:
+        msg_gnss_pose.header.frame_id = "camera_init";
+        msg_gnss_pose.header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec());
+
+        msg_gnss_pose.pose.position.x = gnss_pose(0,3) ;  
+        msg_gnss_pose.pose.position.y = gnss_pose(1,3) ;
+        msg_gnss_pose.pose.position.z = gnss_pose(2,3) ;
+
+        gps_path.poses.push_back(msg_gnss_pose);
+
+        //  save_gnss path
+        PointTypePose thisPose6D;  
+        thisPose6D.x = msg_gnss_pose.pose.position.x ;
+        thisPose6D.y = msg_gnss_pose.pose.position.y ;
+        thisPose6D.z = msg_gnss_pose.pose.position.z ;
+        thisPose6D.intensity = 0;
+        thisPose6D.roll =0;
+        thisPose6D.pitch = 0;
+        thisPose6D.yaw = 0;
+        thisPose6D.time = lidar_end_time;
+        gnss_cloudKeyPoses6D->push_back(thisPose6D);   
+    }
+
+
+}
+void initial_pose_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
+{
+    if(!initial_pose_inited){           //  初始化位置
+        //gnss_data.InitOriginPosition(msg_in->latitude, msg_in->longitude, msg_in->altitude) ; 
+        initial_pose.pose.position.x= msg_in->pose.position.x ;                 //    北
+        initial_pose.pose.position.y = msg_in->pose.position.y ;                 //     东
+        initial_pose.pose.position.z = msg_in->pose.position.z ;                 //    地
+
+        initial_pose.pose.orientation=msg_in->pose.orientation;
+        initial_pose_inited = true ;
+    }
 
 }
 
@@ -1700,6 +1824,32 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped)
     q.setZ(odomAftMapped.pose.pose.orientation.z);
     transform.setRotation(q);
     br.sendTransform(tf::StampedTransform(transform, odomAftMapped.header.stamp, "camera_init", "body"));
+
+
+    nav_msgs::Odometry odomAftMappedd;
+        odomAftMappedd.header.frame_id = "camera_init";
+        odomAftMappedd.child_frame_id = "world";
+        odomAftMappedd.header.stamp = ros::Time().fromSec(lidar_end_time);
+        odomAftMappedd.pose.pose.position.x = 0;
+        odomAftMappedd.pose.pose.position.y = 0;
+        odomAftMappedd.pose.pose.position.z = 0;
+        odomAftMappedd.pose.pose.orientation.x = 0;
+        odomAftMappedd.pose.pose.orientation.y = 0;
+        odomAftMappedd.pose.pose.orientation.z = 0;
+        odomAftMappedd.pose.pose.orientation.w = 1;
+    static tf::TransformBroadcaster brr, brrr,brrrr;
+        tf::Transform                   transformm;
+        tf::Quaternion                  qq;
+        transformm.setOrigin(tf::Vector3(0,0,0));
+        qq.setW(0);
+        qq.setX(1);
+        qq.setY(0);
+        qq.setZ(0);
+        transformm.setRotation( qq );
+        brr.sendTransform( tf::StampedTransform( transformm, odomAftMappedd.header.stamp, "camera_init", "world" ) );
+        // odomAftMappedd.header.stamp =ros::Time::now();
+        // brr.sendTransform( tf::StampedTransform( transformm, odomAftMappedd.header.stamp, "camera_init", "world" ) );
+
 }
 
 void publish_path(const ros::Publisher pubPath)
@@ -1707,6 +1857,8 @@ void publish_path(const ros::Publisher pubPath)
     set_posestamp(msg_body_pose);
     msg_body_pose.header.stamp = ros::Time().fromSec(lidar_end_time);
     msg_body_pose.header.frame_id = "camera_init";
+    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time); //  时间戳
+    string odometryFrame = "camera_init";
 
     /*** if path is too large, the rvis will crash ***/
     static int jjj = 0;
@@ -1714,6 +1866,9 @@ void publish_path(const ros::Publisher pubPath)
     if (jjj % 10 == 0)
     {
         path.poses.push_back(msg_body_pose);
+
+        path.header.stamp = timeLaserInfoStamp;
+        path.header.frame_id = odometryFrame;
         pubPath.publish(path);
         
         //  save  unoptimized pose
@@ -2288,7 +2443,9 @@ int main(int argc, char **argv)
     pubLoopConstraintEdge = nh.advertise<visualization_msgs::MarkerArray>("/fast_lio_sam/mapping/loop_closure_constraints", 1);
 
     // gnss
-    ros::Subscriber sub_gnss = nh.subscribe(gnss_topic, 200000, gnss_cbk);
+    //ros::Subscriber sub_gnss = nh.subscribe(gnss_topic, 200000, gnss_cbk);//
+    ros::Subscriber sub_gnss = nh.subscribe(gnss_topic, 200000, gnss_airsim_cbk);//
+    ros::Subscriber sub_initial_pose = nh.subscribe("/airsim_node/initial_pose", 200000, initial_pose_cbk);//
     
     // saveMap  发布地图保存服务
     srvSaveMap  = nh.advertiseService("/save_map" ,  &saveMapService);
@@ -2341,6 +2498,28 @@ int main(int argc, char **argv)
                 ROS_WARN("No point, skip this scan!\n");
                 continue;
             }
+            if(!initial_pose_inited)
+            {
+                ROS_WARN("No pose_inited, skip this scan!\n");
+                continue;
+            }
+            // if(!initial_pose_change_x)
+            // {
+
+            //     // // ESKF状态和方差  更新
+            //     state_ikfom state_updated = kf.get_x(); //  获取cur_pose (还没修正)
+            //     Eigen::Vector3d pos(initial_pose.pose.position.x, initial_pose.pose.position.y, initial_pose.pose.position.z);
+            //     // Eigen::Vector3d pos(0, 0, 0);
+            //     Eigen::Quaterniond q = Eigen::Quaterniond(initial_pose.pose.orientation.w,initial_pose.pose.orientation.x,initial_pose.pose.orientation.y,initial_pose.pose.orientation.z);
+
+            //     //  更新状态量
+            //     state_updated.pos = pos;
+            //     state_updated.rot =  q;
+            //    // state_point = state_updated; // 对state_point进行更新，state_point可视化用到
+            //     // if(aLoopIsClosed == true )
+            //     kf.change_x(state_updated);  //  对cur_pose 进行isam2优化后的修正
+            //     initial_pose_change_x=true;
+            // }
 
             // 检查当前lidar数据时间，与最早lidar数据时间是否足够
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? false : true;
@@ -2387,8 +2566,10 @@ int main(int argc, char **argv)
 
             // lidar --> imu
             V3D ext_euler = SO3ToEuler(state_point.offset_R_L_I);
-            fout_pre << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
-                     << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << endl;
+            fout_pre << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() 
+            << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " 
+            << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
+            << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << endl;
 
             if (visulize_IkdtreeMap) // If you need to see map point, change to "if(1)"
             {
