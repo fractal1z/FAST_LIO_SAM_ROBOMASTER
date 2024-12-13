@@ -1,7 +1,7 @@
 common:
     lid_topic:  "/airsim_node/drone_1/lidar"
     imu_topic:  "/airsim_node/drone_1/imu/imu"
-    gnss_topic:  "/airsim_node/drone_1/gp"         #"/imu/data"
+    gnss_topic:  "/airsim_node/drone_1/gps"         #"/imu/data"
     time_sync_en: true        # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                   # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
@@ -36,9 +36,9 @@ mapping:
                    0, 0, 1]
 
     extrinT_Gnss2Lidar: [ 0, 0, 0]
-    extrinR_Gnss2Lidar: [ 1, 0, 0, 
-                   0, 1, 0, 
-                   0, 0, 1]
+    extrinR_Gnss2Lidar: [  1, 0, 0, 
+                           0, 1, 0, 
+                           0, 0, 1]
 
 publish:
     path_en:  true
@@ -81,6 +81,7 @@ historyKeyframeSearchNum: 25                  # number of hostory key frames wil
 historyKeyframeFitnessScore: 0.3              # icp threshold, the smaller the better alignment
 
 # GPS Settings
+usegpsData: true
 useImuHeadingInitialization: true           # if using GPS data, set to "true"
 useGpsElevation: true                      # if GPS elevation is bad, set to "false"
 gpsCovThreshold: 2.0                        # m^2, threshold for using GPS data

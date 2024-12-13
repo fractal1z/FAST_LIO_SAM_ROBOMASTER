@@ -286,6 +286,7 @@ geometry_msgs::PoseStamped msg_gnss_pose;
 geometry_msgs::PoseStamped initial_pose;
 string gnss_topic ;
 bool useImuHeadingInitialization;   
+bool usegpsData; 
 bool useGpsElevation;             //  是否使用gps高层优化
 float gpsCovThreshold;          //   gps方向角和高度差的协方差阈值
 float poseCovThreshold;       //  位姿协方差阈值  from isam2
@@ -511,7 +512,7 @@ void getCurPose(state_ikfom cur_state)
  */
 void visualizeLoopClosure()
 {
-    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time); //  时间戳
+    ros::Time timeLaserInfoStamp =ros::Time::now(); //  时间戳
     string odometryFrame = "camera_init";
 
     if (loopIndexContainer.empty())
@@ -606,6 +607,7 @@ bool saveFrame()
  */
 void addOdomFactor()
 {
+    
     if (cloudKeyPoses3D->points.empty())
     {
         // 第一帧初始化先验因子
@@ -616,8 +618,10 @@ void addOdomFactor()
     }
     else
     {
+
+       
         // 添加激光里程计因子
-        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());  //1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4
+        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-3, 1e-3, 1e-3, 1e-2, 1e-2, 1e-2).finished());  //1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4
         gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back()); /// pre
         gtsam::Pose3 poseTo = trans2gtsamPose(transformTobeMapped);                   // cur
         // 参数：前一帧id，当前帧id，前一帧与当前帧的位姿变换（作为观测值），噪声协方差
@@ -658,6 +662,7 @@ void addLoopFactor()
 */
 void addGPSFactor()
 {
+    if(!usegpsData){return;}
     if (gnss_buffer.empty())
         return;
     // 如果没有关键帧，或者首尾关键帧距离小于5m，不添加gps因子
@@ -678,6 +683,7 @@ void addGPSFactor()
         if (gnss_buffer.front().header.stamp.toSec() < lidar_end_time - 0.05)
         {
             gnss_buffer.pop_front();
+            std::cout<<"pop_front:"<<std::endl;
         }
         // 超过当前帧0.2s之后，退出
         else if (gnss_buffer.front().header.stamp.toSec() > lidar_end_time + 0.05)
@@ -687,6 +693,9 @@ void addGPSFactor()
         else
         {
             nav_msgs::Odometry thisGPS = gnss_buffer.front();
+
+            std::cout<<"gps_time:"<<thisGPS.header.stamp.toSec()<<std::endl;
+
             gnss_buffer.pop_front();
             // GPS噪声协方差太大，不能用
             float noise_x = thisGPS.pose.covariance[0];         //  x 方向的协方差
@@ -698,6 +707,12 @@ void addGPSFactor()
             float gps_x = thisGPS.pose.pose.position.x;
             float gps_y = thisGPS.pose.pose.position.y;
             float gps_z = thisGPS.pose.pose.position.z;
+            float gps_qw = thisGPS.pose.pose.orientation.w ;
+            float gps_qx = thisGPS.pose.pose.orientation.x;
+            float gps_qy = thisGPS.pose.pose.orientation.y;
+            float gps_qz = thisGPS.pose.pose.orientation.z;
+            std::cout<<"  x:"<<thisGPS.pose.pose.position.x<<"  y:"<<thisGPS.pose.pose.position.y<<"  z:"<<thisGPS.pose.pose.position.z<<std::endl;
+            std::cout<<"lio:"<<pos_lid<<std::endl;
             if (!useGpsElevation)           //  是否使用gps的高度
             {
                 gps_z = transformTobeMapped[5];
@@ -716,12 +731,26 @@ void addGPSFactor()
                 continue;
             else
                 lastGPSPoint = curGPSPoint;
+
             // 添加GPS因子
-            gtsam::Vector Vector3(3);
-            Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
-            gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
-            gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
-            gtSAMgraph.add(gps_factor);
+            // gtsam::Vector Vector3(3);
+            // Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
+            // gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
+            // gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
+            //gtSAMgraph.add(gps_factor);
+            // 添加GPS位姿因子
+            gtsam::Pose3 gps_pose(
+                gtsam::Rot3::Quaternion(gps_qw, gps_qx, gps_qy, gps_qz), 
+                gtsam::Point3(gps_x, gps_y, gps_z)
+            );
+
+            gtsam::Vector6 Vector6;
+            Vector6 << noise_x, noise_y, noise_z, 0.003, 0.003, 0.003; // 位置和姿态噪声
+            gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector6);
+
+            gtsam::PriorFactor<gtsam::Pose3> gps_pose_factor(cloudKeyPoses3D->size(), gps_pose, gps_noise);
+            gtSAMgraph.add(gps_pose_factor);
+
             aLoopIsClosed = true;
             ROS_INFO("GPS Factor Added");
             break;
@@ -983,7 +1012,7 @@ void loopFindNearKeyframes(pcl::PointCloud<PointType>::Ptr &nearKeyframes, const
 
 void performLoopClosure()
 {
-    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time); //  时间戳
+    ros::Time timeLaserInfoStamp =ros::Time::now(); //  时间戳
     string odometryFrame = "camera_init";
 
     if (cloudKeyPoses3D->points.empty() == true)
@@ -1276,6 +1305,8 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
     double preprocess_start_time = omp_get_wtime();
     time_buffer.push_back(msg->header.stamp.toSec());               //将时间放入缓冲区
     last_timestamp_lidar = msg->header.stamp.toSec();               //记录最后一个时间
+    std::cout << std::fixed << std::setprecision(9);  // 设置显示 9 位小数
+    std::cout<<"last_timestamp_lidar"<<last_timestamp_lidar<<std::endl;
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
         ROS_ERROR("lidar loop back, clear buffer");
@@ -1298,7 +1329,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
-    time_buffer.push_back(msg->header.stamp.toSec());
+
   
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
@@ -1317,6 +1348,7 @@ void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg)
         lidar_buffer.clear();
     }
     last_timestamp_lidar = msg->header.stamp.toSec();
+    
 
     if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty())
     {
@@ -1461,6 +1493,8 @@ void gnss_cbk(const sensor_msgs::NavSatFixConstPtr& msg_in)
 
 void gnss_airsim_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
 {
+    
+
     //  ROS_INFO("GNSS DATA IN ");
     double timestamp = msg_in->header.stamp.toSec();
 
@@ -1491,14 +1525,30 @@ void gnss_airsim_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
     }else{                               //   初始化完成
         //gnss_data.UpdateXYZ(msg_in->latitude, msg_in->longitude, msg_in->altitude) ;             //  WGS84 -> ENU  ???  调试结果好像是 NED 北东地
 
-        Eigen::Matrix4d gnss_pose = Eigen::Matrix4d::Identity();
-        // gnss_pose(0,3) = msg_in->pose.position.x -initial_pose.pose.position.x ;                 //    北
-        // gnss_pose(1,3) = msg_in->pose.position.y -initial_pose.pose.position.y;                 //     东
-        // gnss_pose(2,3) = msg_in->pose.position.z -initial_pose.pose.position.z;                 //    地
 
-        gnss_pose(0,3) = msg_in->pose.position.x ;                 //    北
-        gnss_pose(1,3) = msg_in->pose.position.y ;                 //     东
-        gnss_pose(2,3) = msg_in->pose.position.z ;                 //    地
+
+        Eigen::Matrix4d gnss_pose = Eigen::Matrix4d::Identity();
+        Eigen::Quaterniond q_initial(
+            initial_pose.pose.orientation.w,
+            initial_pose.pose.orientation.x,
+            initial_pose.pose.orientation.y,
+            initial_pose.pose.orientation.z
+            );
+        Eigen::Vector3d offset(
+            msg_in->pose.position.x - initial_pose.pose.position.x,//    北
+            msg_in->pose.position.y - initial_pose.pose.position.y, //     东
+            msg_in->pose.position.z - initial_pose.pose.position.z//    地
+            );
+        Eigen::Vector3d corrected_offset = q_initial.inverse() * offset;
+        gnss_pose(0,3) = corrected_offset.x(); // 北
+        gnss_pose(1,3) = corrected_offset.y(); // 东
+        gnss_pose(2,3) = corrected_offset.z(); 
+
+
+
+        // gnss_pose(0,3) = msg_in->pose.position.x ;                 //    北
+        // gnss_pose(1,3) = msg_in->pose.position.y ;                 //     东
+        // gnss_pose(2,3) = msg_in->pose.position.z ;                 //    地
 
         Eigen::Isometry3d gnss_to_lidar(Gnss_R_wrt_Lidar) ;
         gnss_to_lidar.pretranslate(Gnss_T_wrt_Lidar);
@@ -1511,14 +1561,38 @@ void gnss_airsim_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
         gnss_data_enu.pose.pose.position.y =  gnss_pose(1,3) ;  //gnss_data.local_N;    东
         gnss_data_enu.pose.pose.position.z =  gnss_pose(2,3) ;  //  地
 
-        gnss_data_enu.pose.pose.orientation.x =  geoQuat.x ;                //  gnss 的姿态不可观，所以姿态只用于可视化，取自imu
-        gnss_data_enu.pose.pose.orientation.y =  geoQuat.y;
-        gnss_data_enu.pose.pose.orientation.z =  geoQuat.z;
-        gnss_data_enu.pose.pose.orientation.w =  geoQuat.w;
 
-        gnss_data_enu.pose.covariance[0] = 0.00033 ;
-        gnss_data_enu.pose.covariance[7] = 0.00033 ;
-        gnss_data_enu.pose.covariance[14] = 0.00033 ;
+
+        // 查找最近的IMU orientation
+        if (!imu_buffer.empty()) {//gnss 的姿态不可观，所以姿态只用于可视化，取自imu
+            // 遍历IMU数据，寻找时间最接近的IMU数据
+            auto closest_imu = imu_buffer.front();
+            double min_time_diff = std::abs(closest_imu->header.stamp.toSec() - msg_in->header.stamp.toSec());
+
+            for (const auto& imu_data : imu_buffer) {
+                double time_diff = std::abs(imu_data->header.stamp.toSec() - msg_in->header.stamp.toSec());
+                if (time_diff < min_time_diff) {
+                    closest_imu = imu_data;
+                    min_time_diff = time_diff;
+                }
+            }
+
+            // 使用找到的最近IMU的Orientation
+            gnss_data_enu.pose.pose.orientation.x = closest_imu->orientation.x;
+            gnss_data_enu.pose.pose.orientation.y = closest_imu->orientation.y;
+            gnss_data_enu.pose.pose.orientation.z = closest_imu->orientation.z;
+            gnss_data_enu.pose.pose.orientation.w = closest_imu->orientation.w;
+        } else {
+
+            gnss_data_enu.pose.pose.orientation.x =  geoQuat.x ;
+            gnss_data_enu.pose.pose.orientation.y =  geoQuat.y;
+            gnss_data_enu.pose.pose.orientation.z =  geoQuat.z;
+            gnss_data_enu.pose.pose.orientation.w =  geoQuat.w;
+        }
+
+        gnss_data_enu.pose.covariance[0] = 0.0033 ;
+        gnss_data_enu.pose.covariance[7] = 0.0033 ;
+        gnss_data_enu.pose.covariance[14] = 0.0033 ;
 
         gnss_buffer.push_back(gnss_data_enu);
 
@@ -1529,6 +1603,9 @@ void gnss_airsim_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
         msg_gnss_pose.pose.position.x = gnss_pose(0,3) ;  
         msg_gnss_pose.pose.position.y = gnss_pose(1,3) ;
         msg_gnss_pose.pose.position.z = gnss_pose(2,3) ;
+
+
+        std::cout<<"gx:"<<gnss_pose(0,3)<<"  gy:"<<gnss_pose(1,3)<<"  gz:"<<gnss_pose(2,3)<<std::endl;
 
         gps_path.poses.push_back(msg_gnss_pose);
 
@@ -1595,9 +1672,12 @@ bool sync_packages(MeasureGroup &meas)
         }
 
         meas.lidar_end_time = lidar_end_time;
+        
 
         lidar_pushed = true;
+        std::cout<<"lidar_end_time:"<<lidar_end_time<<std::endl;
     }
+    
 
     if (last_timestamp_imu < lidar_end_time)
     {
@@ -1700,7 +1780,7 @@ void publish_frame_world(const ros::Publisher &pubLaserCloudFull)         //    
 
         sensor_msgs::PointCloud2 laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
-        laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
+        laserCloudmsg.header.stamp =ros::Time::now();
         laserCloudmsg.header.frame_id = "camera_init";
         pubLaserCloudFull.publish(laserCloudmsg);
         publish_count -= PUBFRAME_PERIOD;
@@ -1750,7 +1830,7 @@ void publish_frame_body(const ros::Publisher &pubLaserCloudFull_body)          /
 
     sensor_msgs::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
-    laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
+    laserCloudmsg.header.stamp =ros::Time::now();
     laserCloudmsg.header.frame_id = "body";
     pubLaserCloudFull_body.publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
@@ -1767,7 +1847,7 @@ void publish_effect_world(const ros::Publisher &pubLaserCloudEffect)
     }
     sensor_msgs::PointCloud2 laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
-    laserCloudFullRes3.header.stamp = ros::Time().fromSec(lidar_end_time);
+    laserCloudFullRes3.header.stamp =ros::Time::now();
     laserCloudFullRes3.header.frame_id = "camera_init";
     pubLaserCloudEffect.publish(laserCloudFullRes3);
 }
@@ -1776,7 +1856,7 @@ void publish_map(const ros::Publisher &pubLaserCloudMap)
 {
     sensor_msgs::PointCloud2 laserCloudMap;
     pcl::toROSMsg(*featsFromMap, laserCloudMap);
-    laserCloudMap.header.stamp = ros::Time().fromSec(lidar_end_time);
+    laserCloudMap.header.stamp =ros::Time::now();
     laserCloudMap.header.frame_id = "camera_init";
     pubLaserCloudMap.publish(laserCloudMap);
 }
@@ -1797,7 +1877,7 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped)
 {
     odomAftMapped.header.frame_id = "camera_init";
     odomAftMapped.child_frame_id = "body";
-    odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time); // ros::Time().fromSec(lidar_end_time);
+    odomAftMapped.header.stamp =ros::Time::now(); //ros::Time::now();
     set_posestamp(odomAftMapped.pose);
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
@@ -1829,7 +1909,7 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped)
     nav_msgs::Odometry odomAftMappedd;
         odomAftMappedd.header.frame_id = "camera_init";
         odomAftMappedd.child_frame_id = "world";
-        odomAftMappedd.header.stamp = ros::Time().fromSec(lidar_end_time);
+        odomAftMappedd.header.stamp =ros::Time::now();
         odomAftMappedd.pose.pose.position.x = 0;
         odomAftMappedd.pose.pose.position.y = 0;
         odomAftMappedd.pose.pose.position.z = 0;
@@ -1855,9 +1935,9 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped)
 void publish_path(const ros::Publisher pubPath)
 {
     set_posestamp(msg_body_pose);
-    msg_body_pose.header.stamp = ros::Time().fromSec(lidar_end_time);
+    msg_body_pose.header.stamp =ros::Time::now();
     msg_body_pose.header.frame_id = "camera_init";
-    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time); //  时间戳
+    ros::Time timeLaserInfoStamp =ros::Time::now(); //  时间戳
     string odometryFrame = "camera_init";
 
     /*** if path is too large, the rvis will crash ***/
@@ -1886,7 +1966,7 @@ void publish_path(const ros::Publisher pubPath)
 
 void publish_path_update(const ros::Publisher pubPath)
 {
-    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time); //  时间戳
+    ros::Time timeLaserInfoStamp =ros::Time::now(); //  时间戳
     string odometryFrame = "camera_init";
     if (pubPath.getNumSubscribers() != 0)
     {
@@ -1906,7 +1986,7 @@ void publish_path_update(const ros::Publisher pubPath)
 //  发布gnss 轨迹
 void publish_gnss_path(const ros::Publisher pubPath)
 {
-    gps_path.header.stamp = ros::Time().fromSec(lidar_end_time);
+    gps_path.header.stamp =ros::Time::now();
     gps_path.header.frame_id = "camera_init";
 
     static int jjj = 0;
@@ -2062,7 +2142,7 @@ bool saveMapService(fast_lio_sam::save_mapRequest& req, fast_lio_sam::save_mapRe
       cout << "Saving map to pcd files completed\n" << endl;
 
       // visial optimize global map on viz
-    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time);
+    ros::Time timeLaserInfoStamp =ros::Time::now();
     string odometryFrame = "camera_init";
     publishCloud(&pubOptimizedGlobalMap, globalSurfCloudDS, timeLaserInfoStamp, odometryFrame);
 
@@ -2086,7 +2166,7 @@ void saveMap()
 void publishGlobalMap()
 {
     /*** if path is too large, the rvis will crash ***/
-    ros::Time timeLaserInfoStamp = ros::Time().fromSec(lidar_end_time);
+    ros::Time timeLaserInfoStamp =ros::Time::now();
     string odometryFrame = "camera_init";
     if (pubLaserCloudSurround.getNumSubscribers() == 0)
         return;
@@ -2336,6 +2416,7 @@ int main(int argc, char **argv)
     nh.param<vector<double>>("mapping/extrinR_Gnss2Lidar", extrinR_Gnss2Lidar, vector<double>());
     nh.param<vector<double>>("mapping/extrinT_Gnss2Lidar", extrinT_Gnss2Lidar, vector<double>());
     nh.param<bool>("useImuHeadingInitialization", useImuHeadingInitialization, false);
+    nh.param<bool>("usegpsData", usegpsData, false);
     nh.param<bool>("useGpsElevation", useGpsElevation, false);
     nh.param<float>("gpsCovThreshold", gpsCovThreshold, 2.0);
     nh.param<float>("poseCovThreshold", poseCovThreshold, 25.0);
@@ -2498,11 +2579,11 @@ int main(int argc, char **argv)
                 ROS_WARN("No point, skip this scan!\n");
                 continue;
             }
-            if(!initial_pose_inited)
-            {
-                ROS_WARN("No pose_inited, skip this scan!\n");
-                continue;
-            }
+            // if(!initial_pose_inited)
+            // {
+            //     ROS_WARN("No pose_inited, skip this scan!\n");
+            //     continue;
+            // }
             // if(!initial_pose_change_x)
             // {
 
