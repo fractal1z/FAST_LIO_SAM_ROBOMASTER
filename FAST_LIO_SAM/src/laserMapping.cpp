@@ -1871,6 +1871,24 @@ void set_posestamp(T &out)
     out.pose.orientation.y = geoQuat.y;
     out.pose.orientation.z = geoQuat.z;
     out.pose.orientation.w = geoQuat.w;
+    // out.twist.twist.linear.x= state_point.vel(0);
+    // out.twist.twist.linear.y= state_point.vel(1);
+    // out.twist.twist.linear.z= state_point.vel(2);
+}
+
+template <typename T>
+void set_pose_vel_stamp(T &out)
+{
+    out.pose.pose.position.x = state_point.pos(0);
+    out.pose.pose.position.y = state_point.pos(1);
+    out.pose.pose.position.z = state_point.pos(2);
+    out.pose.pose.orientation.x = geoQuat.x;
+    out.pose.pose.orientation.y = geoQuat.y;
+    out.pose.pose.orientation.z = geoQuat.z;
+    out.pose.pose.orientation.w = geoQuat.w;
+    out.twist.twist.linear.x= state_point.vel(0);
+    out.twist.twist.linear.y= state_point.vel(1);
+    out.twist.twist.linear.z= state_point.vel(2);
 }
 
 void publish_odometry(const ros::Publisher &pubOdomAftMapped)
@@ -1878,7 +1896,8 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped)
     odomAftMapped.header.frame_id = "camera_init";
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp =ros::Time::now(); //ros::Time::now();
-    set_posestamp(odomAftMapped.pose);
+    set_pose_vel_stamp(odomAftMapped);
+
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
     for (int i = 0; i < 6; i++)
@@ -2675,6 +2694,7 @@ int main(int argc, char **argv)
             state_point = kf.get_x();
             euler_cur = SO3ToEuler(state_point.rot);
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I; // world系下lidar坐标
+            
             geoQuat.x = state_point.rot.coeffs()[0];                                // world系下当前imu的姿态四元数
             geoQuat.y = state_point.rot.coeffs()[1];
             geoQuat.z = state_point.rot.coeffs()[2];
