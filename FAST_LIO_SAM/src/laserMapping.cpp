@@ -1606,6 +1606,8 @@ void gnss_airsim_cbk(const geometry_msgs::PoseStampedPtr& msg_in)
 
 
         std::cout<<"gx:"<<gnss_pose(0,3)<<"  gy:"<<gnss_pose(1,3)<<"  gz:"<<gnss_pose(2,3)<<std::endl;
+        
+        if(!initial_pose_inited)return;
 
         gps_path.poses.push_back(msg_gnss_pose);
 
