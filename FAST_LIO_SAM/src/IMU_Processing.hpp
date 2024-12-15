@@ -60,6 +60,9 @@ class ImuProcess
   V3D cov_bias_acc;
   double first_lidar_time;
 
+  V3D angvel_last;
+  V3D acc_s_last;
+
  private:
   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
@@ -73,8 +76,7 @@ class ImuProcess
   V3D Lidar_T_wrt_IMU;
   V3D mean_acc; //初始化时得到的加速度均值
   V3D mean_gyr;
-  V3D angvel_last;
-  V3D acc_s_last;
+
   double start_timestamp_;
   double last_lidar_end_time_;
   int    init_iter_num = 1; // 初始化时，imu数据迭代的次数

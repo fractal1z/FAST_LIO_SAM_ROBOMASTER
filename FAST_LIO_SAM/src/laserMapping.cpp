@@ -1882,13 +1882,39 @@ void set_pose_vel_stamp(T &out)
     out.pose.pose.position.x = state_point.pos(0);
     out.pose.pose.position.y = state_point.pos(1);
     out.pose.pose.position.z = state_point.pos(2);
+
     out.pose.pose.orientation.x = geoQuat.x;
     out.pose.pose.orientation.y = geoQuat.y;
     out.pose.pose.orientation.z = geoQuat.z;
     out.pose.pose.orientation.w = geoQuat.w;
+
     out.twist.twist.linear.x= state_point.vel(0);
     out.twist.twist.linear.y= state_point.vel(1);
     out.twist.twist.linear.z= state_point.vel(2);
+
+
+
+
+}
+template <typename T>
+void set_pose_vel_w_stamp(T &out)
+{
+    out.pose.pose.position.x = state_point.pos(0);
+    out.pose.pose.position.y = state_point.pos(1);
+    out.pose.pose.position.z = state_point.pos(2);
+
+    out.pose.pose.orientation.x = geoQuat.x;
+    out.pose.pose.orientation.y = geoQuat.y;
+    out.pose.pose.orientation.z = geoQuat.z;
+    out.pose.pose.orientation.w = geoQuat.w;
+
+    out.twist.twist.linear.x= state_point.vel(0);
+    out.twist.twist.linear.y= state_point.vel(1);
+    out.twist.twist.linear.z= state_point.vel(2);
+
+    out.twist.twist.angular.x=p_imu->angvel_last(0);
+    out.twist.twist.angular.y=p_imu->angvel_last(1);
+    out.twist.twist.angular.z=p_imu->angvel_last(2);
 }
 
 void publish_odometry(const ros::Publisher &pubOdomAftMapped)
@@ -1896,7 +1922,7 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped)
     odomAftMapped.header.frame_id = "camera_init";
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp =ros::Time::now(); //ros::Time::now();
-    set_pose_vel_stamp(odomAftMapped);
+    set_pose_vel_w_stamp(odomAftMapped);
 
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
